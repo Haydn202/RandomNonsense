@@ -1,0 +1,52 @@
+# Images this microservice will use to run excluding those in setup jobs
+parameters:
+- name: containerRepos
+  type: object
+
+steps:
+  - script: |
+      sudo apt-get install rpm
+      wget https://github.com/aquasecurity/trivy/releases/download/v0.32.0/trivy_0.32.0_Linux-64bit.deb
+      sudo dpkg -i trivy_0.32.0_Linux-64bit.deb
+      trivy -v
+    displayName: 'Download and install Trivy'
+
+  - ${{ each repo in parameters.containerRepos }}:
+    - script: |
+        docker images
+        docker build -t $registry/${{ repo.name }}:$(Build.BuildNumber) -f **${{ repo.location }} $(Build.Repository.LocalPath)
+      env:
+        registry: ospriregistry.azurecr.io
+      displayName: Building image ${{ repo.name }}
+
+    - task: CmdLine@2
+      displayName: "Run trivy scan"
+      inputs:
+        script: |
+            trivy image --exit-code 0 --severity LOW,MEDIUM --format template --template "@junit.tpl" -o ${{ repo.name }}:$(Build.BuildNumber)-junit-report-low-med.xml ospriregistry.azurecr.io/${{ repo.name }}:$(Build.BuildNumber)
+            trivy image --exit-code 0 --severity HIGH,CRITICAL --format template --template "@junit.tpl" -o ${{ repo.name }}:$(Build.BuildNumber)-junit-report-high-crit.xml ospriregistry.azurecr.io/${{ repo.name }}:$(Build.BuildNumber)
+
+    - task: PublishTestResults@2
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/${{ repo.name }}:$(Build.BuildNumber)-junit-report-low-med.xml'
+        mergeTestResults: true
+        failTaskOnFailedTests: false
+        testRunTitle: 'Trivy ${{ repo.name }}:$(Build.BuildNumber) - Low and Medium Vulnerabilities'
+      condition: 'always()'
+
+    - task: PublishTestResults@2
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/${{ repo.name }}:$(Build.BuildNumber)-junit-report-high-crit.xml'
+        mergeTestResults: true
+        failTaskOnFailedTests: false
+        testRunTitle: 'Trivy ${{ repo.name }}:$(Build.BuildNumber) - High and Critical Vulnerabilities'
+      condition: 'always()'
+
+    - task: CmdLine@2
+      displayName: "Run trivy scan"
+      inputs:
+        script: |
+            trivy image --exit-code 0 --severity LOW,MEDIUM ospriregistry.azurecr.io/${{ repo.name }}:$(Build.BuildNumber)
+            trivy image --exit-code 0 --severity HIGH,CRITICAL ospriregistry.azurecr.io/${{ repo.name }}:$(Build.BuildNumber)
