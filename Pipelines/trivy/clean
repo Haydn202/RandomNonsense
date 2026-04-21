@@ -1,0 +1,150 @@
+SET NOCOUNT ON;
+
+BEGIN TRAN;
+
+/* -------- Date / date scalar attributes -------- */
+UPDATE aa
+SET aa.[Value] = mig.NewValue
+OUTPUT
+    deleted.Id            AS ActionAttributeId,
+    deleted.ActionId      AS ActionId,
+    deleted.[Value]       AS OldValue,
+    inserted.[Value]      AS NewValue
+FROM dbo.ActionAttribute AS aa
+INNER JOIN dbo.[Action] AS act
+    ON act.Id = aa.ActionId
+   AND act.[Deleted] = 0
+INNER JOIN dbo.ActionStructureAttribute AS asa
+    ON asa.Id = aa.ActionStructureAttributeId
+   AND asa.ActionStructureId = act.StructureId
+INNER JOIN dbo.ActionAttributeType AS att
+    ON att.Id = asa.ActionAttributeTypeId
+CROSS APPLY (SELECT v = LTRIM(RTRIM(aa.[Value]))) AS t
+CROSS APPLY (
+    SELECT ExtractedDate =
+        COALESCE(
+            IIF(
+                CHARINDEX(N'T', t.v) = 0 AND LEN(t.v) = 10,
+                TRY_CONVERT(date, t.v, 126),
+                NULL
+            ),
+            CONVERT(
+                date,
+                TRY_CONVERT(DATETIMEOFFSET(3), t.v)
+            )
+        )
+) AS d
+CROSS APPLY (
+    SELECT NewValue =
+        CONVERT(varchar(10), d.ExtractedDate, 23) + N'T12:00:00.000Z'
+) AS mig
+WHERE att.[Type] IN (N'Date', N'date')
+  AND t.v <> N''
+  AND ISNULL(ISJSON(aa.[Value]), 0) = 0
+  AND d.ExtractedDate IS NOT NULL
+  AND NOT (
+        TRY_CONVERT(DATETIMEOFFSET(3), t.v) IS NOT NULL
+    AND CHARINDEX(N'T', t.v) > 0
+    AND RIGHT(t.v, 1) = N'Z'
+      )
+  AND mig.NewValue <> t.v;
+
+/* -------- RecurringDate JSON -------- */
+UPDATE aa
+SET aa.[Value] = mig.NewJson
+OUTPUT
+    deleted.Id            AS ActionAttributeId,
+    deleted.ActionId      AS ActionId,
+    deleted.[Value]       AS OldValue,
+    inserted.[Value]      AS NewValue
+FROM dbo.ActionAttribute AS aa
+INNER JOIN dbo.[Action] AS act
+    ON act.Id = aa.ActionId
+   AND act.[Deleted] = 0
+INNER JOIN dbo.ActionStructureAttribute AS asa
+    ON asa.Id = aa.ActionStructureAttributeId
+   AND asa.ActionStructureId = act.StructureId
+INNER JOIN dbo.ActionAttributeType AS att
+    ON att.Id = asa.ActionAttributeTypeId
+CROSS APPLY (
+    SELECT
+        b = LTRIM(RTRIM(JSON_VALUE(aa.[Value], N'$.base'))),
+        o = LTRIM(RTRIM(JSON_VALUE(aa.[Value], N'$.override')))
+) AS j
+CROSS APPLY (
+    SELECT
+        bd = COALESCE(
+            IIF(
+                CHARINDEX(N'T', j.b) = 0 AND LEN(j.b) = 10,
+                TRY_CONVERT(date, j.b, 126),
+                NULL
+            ),
+            CONVERT(date, TRY_CONVERT(DATETIMEOFFSET(3), j.b))
+        ),
+        od = COALESCE(
+            IIF(
+                CHARINDEX(N'T', j.o) = 0 AND LEN(j.o) = 10,
+                TRY_CONVERT(date, j.o, 126),
+                NULL
+            ),
+            CONVERT(date, TRY_CONVERT(DATETIMEOFFSET(3), j.o))
+        )
+) AS d
+CROSS APPLY (
+    SELECT
+        baseOk =
+            CASE
+                WHEN NULLIF(j.b, N'') IS NULL THEN 1
+                WHEN TRY_CONVERT(DATETIMEOFFSET(3), j.b) IS NOT NULL
+                 AND CHARINDEX(N'T', j.b) > 0
+                 AND RIGHT(j.b, 1) = N'Z'
+                THEN 1
+                ELSE 0
+            END,
+        ovOk =
+            CASE
+                WHEN NULLIF(j.o, N'') IS NULL THEN 1
+                WHEN TRY_CONVERT(DATETIMEOFFSET(3), j.o) IS NOT NULL
+                 AND CHARINDEX(N'T', j.o) > 0
+                 AND RIGHT(j.o, 1) = N'Z'
+                THEN 1
+                ELSE 0
+            END
+) AS ok
+CROSS APPLY (
+    SELECT
+        newB =
+            IIF(
+                ok.baseOk = 0 AND NULLIF(j.b, N'') IS NOT NULL AND d.bd IS NOT NULL,
+                CONVERT(varchar(10), d.bd, 23) + N'T12:00:00.000Z',
+                NULL
+            ),
+        newO =
+            IIF(
+                ok.ovOk = 0 AND NULLIF(j.o, N'') IS NOT NULL AND d.od IS NOT NULL,
+                CONVERT(varchar(10), d.od, 23) + N'T12:00:00.000Z',
+                NULL
+            )
+) AS nb
+CROSS APPLY (
+    SELECT NewJson =
+        CASE
+            WHEN nb.newB IS NOT NULL AND nb.newO IS NOT NULL
+                THEN JSON_MODIFY(JSON_MODIFY(aa.[Value], N'$.base', nb.newB), N'$.override', nb.newO)
+            WHEN nb.newB IS NOT NULL
+                THEN JSON_MODIFY(aa.[Value], N'$.base', nb.newB)
+            WHEN nb.newO IS NOT NULL
+                THEN JSON_MODIFY(aa.[Value], N'$.override', nb.newO)
+            ELSE aa.[Value]
+        END
+) AS mig
+WHERE att.[Type] = N'RecurringDate'
+  AND NULLIF(LTRIM(RTRIM(aa.[Value])), N'') IS NOT NULL
+  AND ISJSON(aa.[Value]) = 1
+  AND JSON_VALUE(aa.[Value], N'$.frequency') IS NOT NULL
+  AND (ok.baseOk = 0 OR ok.ovOk = 0)
+  AND (nb.newB IS NOT NULL OR nb.newO IS NOT NULL)
+  AND mig.NewJson <> aa.[Value];
+
+-- ROLLBACK TRAN;   -- dry-run: rollback and inspect OUTPUT
+COMMIT TRAN;
