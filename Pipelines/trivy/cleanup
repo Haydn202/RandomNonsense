@@ -1,0 +1,58 @@
+/* Preview: RecurringDate attributes on actions in Draft that still have $.base */
+SELECT
+    aa.Id                    AS ActionAttributeId,
+    act.Id                   AS ActionId,
+    act.Name                 AS ActionName,
+    st.Id                    AS StatusId,
+    st.[Name]                AS StatusName,
+    asa.Name                 AS StructureAttributeName,
+    aa.[Value]               AS CurrentValue,
+    JSON_MODIFY(aa.[Value], '$.base', NULL) AS NewValue
+FROM dbo.ActionAttribute AS aa
+INNER JOIN dbo.[Action] AS act
+    ON act.Id = aa.ActionId
+   AND act.[Deleted] = 0
+INNER JOIN dbo.ActionStatus AS st
+    ON st.Id = act.StatusId
+   AND st.ActionStructureId = act.StructureId
+INNER JOIN dbo.ActionStructureAttribute AS asa
+    ON asa.Id = aa.ActionStructureAttributeId
+   AND asa.ActionStructureId = act.StructureId
+INNER JOIN dbo.ActionAttributeType AS att
+    ON att.Id = asa.ActionAttributeTypeId
+   AND att.[Type] = N'RecurringDate'
+WHERE st.[Name] = N'Draft'
+  AND aa.[Value] IS NOT NULL
+  AND ISJSON(aa.[Value]) = 1
+  AND JSON_VALUE(aa.[Value], '$.base') IS NOT NULL;
+
+BEGIN TRAN;
+
+UPDATE aa
+SET aa.[Value] = JSON_MODIFY(aa.[Value], '$.base', NULL),
+    aa.LastModifiedDate = SYSUTCDATETIME()
+OUTPUT
+    deleted.Id            AS ActionAttributeId,
+    deleted.ActionId      AS ActionId,
+    deleted.[Value]       AS OldValue,
+    inserted.[Value]      AS NewValue
+FROM dbo.ActionAttribute AS aa
+INNER JOIN dbo.[Action] AS act
+    ON act.Id = aa.ActionId
+   AND act.[Deleted] = 0
+INNER JOIN dbo.ActionStatus AS st
+    ON st.Id = act.StatusId
+   AND st.ActionStructureId = act.StructureId
+INNER JOIN dbo.ActionStructureAttribute AS asa
+    ON asa.Id = aa.ActionStructureAttributeId
+   AND asa.ActionStructureId = act.StructureId
+INNER JOIN dbo.ActionAttributeType AS att
+    ON att.Id = asa.ActionAttributeTypeId
+   AND att.[Type] = N'RecurringDate'
+WHERE st.[Name] = N'Draft'
+  AND aa.[Value] IS NOT NULL
+  AND ISJSON(aa.[Value]) = 1
+  AND JSON_VALUE(aa.[Value], '$.base') IS NOT NULL;
+
+-- ROLLBACK TRAN;
+COMMIT TRAN;
