@@ -1,0 +1,42 @@
+/*
+  Open actions only: "Next update due" in the past (UTC), "Update overdue" unset.
+*/
+DECLARE @DueName     nvarchar(255) = N'Next update due';
+DECLARE @OverdueName nvarchar(255) = N'Update overdue';
+
+SELECT
+    act.Id                         AS ActionId,
+    act.Name                       AS ActionName,
+    st.Id                          AS StatusId,
+    st.[Name]                      AS StatusName,
+    act.StructureId,
+    aaDue.[Value]                  AS NextUpdateDueRaw,
+    TRY_CONVERT(datetimeoffset(3), NULLIF(LTRIM(RTRIM(aaDue.[Value])), N''))
+                                   AS NextUpdateDueUtc,
+    aaOver.[Value]                 AS UpdateOverdueRaw
+FROM dbo.[Action] AS act
+INNER JOIN dbo.ActionStatus AS st
+    ON st.Id = act.StatusId
+   AND st.ActionStructureId = act.StructureId
+   AND st.[Name] = N'Open'
+INNER JOIN dbo.ActionStructureAttribute AS asaDue
+    ON asaDue.ActionStructureId = act.StructureId
+   AND asaDue.[Name] = @DueName
+INNER JOIN dbo.ActionAttribute AS aaDue
+    ON aaDue.ActionId = act.Id
+   AND aaDue.ActionStructureAttributeId = asaDue.Id
+INNER JOIN dbo.ActionStructureAttribute AS asaOverDef
+    ON asaOverDef.ActionStructureId = act.StructureId
+   AND asaOverDef.[Name] = @OverdueName
+LEFT JOIN dbo.ActionAttribute AS aaOver
+    ON aaOver.ActionId = act.Id
+   AND aaOver.ActionStructureAttributeId = asaOverDef.Id
+WHERE act.[Deleted] = 0
+  AND NULLIF(LTRIM(RTRIM(aaDue.[Value])), N'') IS NOT NULL
+  AND TRY_CONVERT(DATETIMEOFFSET(3), NULLIF(LTRIM(RTRIM(aaDue.[Value])), N'')) IS NOT NULL
+  AND TRY_CONVERT(DATETIMEOFFSET(3), NULLIF(LTRIM(RTRIM(aaDue.[Value])), N'')) < SYSUTCDATETIME()
+  AND (
+        aaOver.Id IS NULL
+        OR NULLIF(LTRIM(RTRIM(aaOver.[Value])), N'') IS NULL
+      )
+ORDER BY act.Id;
